@@ -1,0 +1,588 @@
+---
+title: "<span style='background-color: #3498db; color: white; padding: 10px; display: block; font-size: 28px; text-align: center; border-radius: 5px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);'>Exploratory Data Analysis of WMATA Transit System</span>"
+author: "Tomato Smoothie🍅"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+    highlight: tango
+    code_folding: hide
+    css: |
+      h1, h2, h3, h4 {
+        color: #2c3e50;
+        background-color: #f8f9fa;
+        padding: 10px;
+        border-left: 5px solid #3498db;
+        font-weight: bold;
+      }
+      h1 {
+        border-left: 5px solid #e74c3c;
+      }
+      h2 {
+        border-left: 5px solid #3498db;
+        margin-top: 30px;
+      }
+      h3 {
+        border-left: 5px solid #2ecc71;
+      }
+---
+
+```{r setup, include=FALSE}
+# Configure global options for all code chunks
+knitr::opts_chunk$set(
+  echo = TRUE,          # Show code
+  warning = FALSE,      # Hide warnings
+  message = FALSE,      # Hide messages
+  fig.width = 10,       # Default figure width
+  fig.height = 6,       # Default figure height
+  fig.align = "center"  # Center figures
+)
+```
+
+## 📊 Introduction
+
+This document presents a comprehensive exploratory data analysis (EDA) of the Washington Metropolitan Area Transit Authority (WMATA) system. The analysis examines multiple aspects of WMATA's ridership patterns including:
+
+- Daily and monthly ridership trends
+- Station-level usage patterns across the Metrorail system
+- Peak vs. off-peak travel behavior
+- Fare technology adoption (tap vs. non-tap entries)
+- Travel patterns by time period
+
+The insights derived from this analysis can help WMATA planners optimize service schedules, allocate resources efficiently, and improve the passenger experience across the network.
+
+## 🔧 Data Preparation
+
+### 📚 Load Required Libraries
+
+```{r libraries}
+# Data manipulation libraries
+library(dplyr)      # For data transformation
+library(tidyr)      # For data cleaning
+library(readr)      # For reading CSV files
+
+# Date and time handling
+library(lubridate)  # For date manipulation
+
+# Visualization libraries
+library(ggplot2)    # For creating graphs
+library(gridExtra)  # For arranging multiple plots
+library(reshape2)   # For reshaping data
+library(forcats)    # For factor manipulation
+library(stringr)    # For string manipulation
+```
+
+### 📥 Import Data Sources
+
+```{r load-data, message=FALSE, warning=FALSE}
+# Import main ridership datasets
+total_entries_exits <- read_csv("Total_Entries_and_Exits_Processed.csv")
+entries_over_time <- read_csv("Entries_Over_Time_Processed.csv")
+entries_by_tap <- read_csv("Entries_by_Tap_and_noTap_Processed.csv")
+
+# Import aggregated boardings data
+boardings_by_day <- read_csv("Boardings_by_Day_of_Week_Processed.csv")
+boardings_by_month <- read_csv("Cleaned_Boardings_Data.csv")
+boardings_weekends <- read_csv("Boardings_Weekends_Processed.csv")
+
+# Import time-based and station-based data
+boardings_time_period <- read_csv("Boardings_by_Time_Period_Processed.csv")
+entries_by_year <- read_csv("Entries_by_Year_Processed.csv")
+boardings_by_route <- read_csv("Boardings_by_Route_Table_Processed.csv")
+```
+
+### 🧹 Data Cleaning and Preprocessing
+
+```{r data-cleaning}
+# ---- Handle date and day columns ----
+# Identify appropriate column names based on what's available in the data
+date_col_name <- if("Date" %in% names(total_entries_exits)) "Date" else "Column_0"
+day_col_name <- if("Day" %in% names(total_entries_exits)) "Day" else "Column_0"
+
+# Extract and parse date information from text columns if needed
+if("Column_0" %in% names(total_entries_exits) && !("Date" %in% names(total_entries_exits))) {
+  # Check if Column_0 contains date strings (e.g., "Tuesday, March 11, 2025")
+  sample_dates <- head(total_entries_exits$Column_0)
+  date_pattern <- "\\w+,\\s+\\w+\\s+\\d+,\\s+\\d{4}"
+  
+  if(any(grepl(date_pattern, sample_dates))) {
+    # Parse dates by removing the day of week prefix
+    total_entries_exits$Date <- mdy(gsub("^\\w+,\\s+", "", total_entries_exits$Column_0))
+    
+    # Extract day of week from the full string
+    total_entries_exits$Day <- sub(",.*$", "", total_entries_exits$Column_0)
+  }
+}
+
+# ---- Clean numeric fields ----
+# Convert string numbers with commas to numeric values
+if(is.character(total_entries_exits$Entries)) {
+  total_entries_exits$Entries <- as.numeric(stringr::str_replace_all(total_entries_exits$Entries, ",", ""))
+}
+if(is.character(total_entries_exits$Exits)) {
+  total_entries_exits$Exits <- as.numeric(stringr::str_replace_all(total_entries_exits$Exits, ",", ""))
+}
+
+# Verify data quality after conversion
+if(any(is.na(total_entries_exits$Entries)) || any(is.na(total_entries_exits$Exits))) {
+  warning("NAs introduced during number conversion - check data format")
+}
+
+# ---- Standardize categorical variables ----
+# Ensure days of week are properly ordered
+day_levels <- c("Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday")
+if("Day" %in% names(total_entries_exits)) {
+  total_entries_exits$Day <- factor(total_entries_exits$Day, levels = day_levels)
+}
+
+# ---- Standardize column names across datasets ----
+# Process boardings_by_day dataframe
+if("Day of Week" %in% names(boardings_by_day)) {
+  boardings_by_day <- boardings_by_day %>% rename(Day = `Day of Week`)
+}
+
+# Identify and standardize value column in boardings_by_day
+boardings_column_names <- names(boardings_by_day)
+if(length(boardings_column_names) >= 2) {
+  if(!"Boardings" %in% boardings_column_names) {
+    boardings_value_col <- boardings_column_names[2]  # Assuming the value column is the second one
+    boardings_by_day <- boardings_by_day %>% rename(Boardings = all_of(boardings_value_col))
+  }
+} else {
+  warning("boardings_by_day doesn't have enough columns")
+}
+
+# Process station names in entries_by_tap
+if("Station Name" %in% names(entries_by_tap)) {
+  entries_by_tap <- entries_by_tap %>% rename(Station = `Station Name`)
+}
+
+# Create proper month ordering for time-based analysis
+if("Month" %in% names(boardings_by_month)) {
+  month_levels <- month.name  # Built-in R vector with month names
+  boardings_by_month$Month <- factor(boardings_by_month$Month, levels = month_levels)
+}
+```
+
+## 🔍 Exploratory Data Analysis
+
+### 📋 Data Structure Overview
+
+```{r check-data}
+# Display structure of main datasets to understand their composition
+str(total_entries_exits)
+str(boardings_by_day)
+```
+
+### 📊 Summary Statistics
+
+```{r summary-stats}
+# Generate summary statistics for key datasets
+summary(total_entries_exits)
+summary(boardings_by_day)
+summary(entries_by_year)
+```
+
+## 📈 Visualizing Temporal Trends
+
+### 📆 Ridership Patterns Over Time
+
+```{r time-trends, fig.cap="Daily entries and exits over time"}
+# Check if Date column exists and has valid data
+if("Date" %in% names(total_entries_exits) && 
+   is.numeric(total_entries_exits$Entries) && 
+   is.numeric(total_entries_exits$Exits)) {
+  
+  # Convert to Date type if it's not already
+  if(!inherits(total_entries_exits$Date, "Date")) {
+    total_entries_exits$Date <- as.Date(total_entries_exits$Date)
+  }
+  
+  # Create time series plot of entries and exits
+  ggplot(total_entries_exits, aes(x = Date)) +
+    geom_line(aes(y = Entries, color = "Entries"), size = 1) +
+    geom_line(aes(y = Exits, color = "Exits"), size = 1) +
+    labs(
+      title = "Entries and Exits Over Time",
+      subtitle = "Daily ridership patterns",
+      x = "Date", 
+      y = "Count"
+    ) +
+    scale_color_manual(values = c("Entries" = "blue", "Exits" = "red")) +
+    theme_minimal() +
+    theme(
+      legend.title = element_blank(),
+      legend.position = "bottom",
+      plot.title = element_text(face = "bold"),
+      axis.title = element_text(face = "bold")
+    )
+} else {
+  cat("Cannot create time trends plot - missing Date column or invalid data\n")
+}
+```
+
+### 📅 Day of Week Patterns
+
+```{r day-of-week, fig.cap="Ridership distribution by day of week"}
+# Using the correct column name for boardings
+if("Day" %in% names(boardings_by_day) && "Boardings" %in% names(boardings_by_day)) {
+  ggplot(boardings_by_day, aes(x = Day, y = Boardings, fill = Day)) +
+    geom_bar(stat = "identity") +
+    labs(
+      title = "Total Boardings by Day of the Week",
+      subtitle = "Weekday vs. weekend ridership patterns", 
+      x = "Day", 
+      y = "Boardings"
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(face = "bold"),
+      axis.title = element_text(face = "bold")
+    )
+} else {
+  # Create a simplified version using original column names
+  ggplot(boardings_by_day, aes(x = boardings_by_day[[1]], y = boardings_by_day[[2]])) +
+    geom_bar(stat = "identity", fill = "steelblue") +
+    labs(
+      title = "Total Boardings by Day of the Week", 
+      x = names(boardings_by_day)[1], 
+      y = names(boardings_by_day)[2]
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(face = "bold"),
+      axis.title = element_text(face = "bold")
+    )
+}
+```
+
+### 📅 Monthly Ridership Patterns
+
+```{r monthly-patterns, fig.cap="Monthly ridership distribution"}
+boardings_data <- read_csv("Cleaned_Boardings_Data.csv")
+
+# Aggregate data by month (sum of avg_daily across years and tap types)
+boardings_by_month <- boardings_data %>%
+  group_by(month) %>%
+  summarize(Value = sum(avg_daily, na.rm = TRUE)) %>%
+  rename(Month = month)
+
+# Ensure proper month ordering
+month_order <- c("January", "February", "March", "April", "May", "June", 
+                "July", "August", "September", "October", "November", "December")
+boardings_by_month$Month <- factor(boardings_by_month$Month, levels = month_order)
+
+# Create the plot
+ggplot(boardings_by_month, aes(x = Month, y = Value, fill = Month)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "Boardings by Month", 
+    subtitle = "Seasonal patterns in transit usage",
+    x = "Month", 
+    y = "Average Daily Boardings"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(face = "bold"),
+    axis.title = element_text(face = "bold"),
+    legend.position = "none"
+  )
+```
+
+## 🚉 Station-Level Analysis
+
+### 🥇 Top Stations by Ridership
+
+```{r top-stations, fig.cap="Top 10 stations by total boardings"}
+# Check if the file has the expected structure based on our inspection
+if("Station Name" %in% names(boardings_by_route)) {
+  # Create a new column with total boardings across all time periods
+  boardings_by_route <- boardings_by_route %>%
+    mutate(Total = `AM Peak (Open-9:30am)` + 
+           `Midday (9:30am-3pm)` + 
+           `PM Peak (3pm-7pm)` + 
+           `Evening (7pm-12am)` + 
+           `Late Night (12am-Close)`)
+  
+  # Get top stations
+  top_stations <- boardings_by_route %>%
+    arrange(desc(Total)) %>%
+    slice_head(n = 10)
+  
+  # Create the plot
+  ggplot(top_stations, aes(x = reorder(`Station Name`, -Total), y = Total, fill = `Station Name`)) +
+    geom_bar(stat = "identity") +
+    labs(
+      title = "Top 10 Stations by Total Boardings", 
+      subtitle = "Major activity centers in the transit network",
+      x = "Station", 
+      y = "Boardings"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none",
+      plot.title = element_text(face = "bold"),
+      axis.title = element_text(face = "bold")
+    )
+} else {
+  cat("Cannot create station boardings plot - required columns not found\n")
+}
+```
+
+### ⏰ Time Period Distribution Analysis
+
+```{r time-period-analysis, fig.cap="Distribution of boardings by time period"}
+if("Station Name" %in% names(boardings_by_route)) {
+  # Calculate system-wide percentages by time period
+  total_by_time <- colSums(boardings_by_route[, 2:6], na.rm = TRUE)
+  total_all_periods <- sum(total_by_time)
+  
+  time_period_pct <- data.frame(
+    TimePeriod = names(total_by_time),
+    Boardings = total_by_time,
+    Percentage = round(100 * total_by_time / total_all_periods, 1)
+  )
+  
+  # Create a bar chart of distribution by time period
+  ggplot(time_period_pct, aes(x = reorder(TimePeriod, -Percentage), y = Percentage, fill = TimePeriod)) +
+    geom_bar(stat = "identity") +
+    labs(
+      title = "Distribution of Boardings by Time Period", 
+      subtitle = "Peak vs. off-peak travel patterns",
+      x = "Time Period", 
+      y = "Percentage of Total Boardings"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      legend.position = "none",
+      plot.title = element_text(face = "bold"),
+      axis.title = element_text(face = "bold")
+    )
+  
+  # Print the table
+  cat("System-wide distribution of boardings by time period:\n")
+  print(time_period_pct)
+}
+```
+
+## 📊 Statistical Analysis
+
+### 📉 ANOVA: Analyzing Day of Week Variations
+
+```{r anova-boardings}
+# First check if we have the required columns and enough data points for ANOVA
+if("Boardings" %in% names(boardings_by_day) && "Day" %in% names(boardings_by_day)) {
+  if(nrow(boardings_by_day) >= 7) {  # Need at least one data point per day
+    tryCatch({
+      # Perform one-way ANOVA to test if day of week affects ridership
+      anova_boardings <- aov(Boardings ~ Day, data = boardings_by_day)
+      summary_result <- summary(anova_boardings)
+      
+      # Display ANOVA results
+      cat("One-way ANOVA: Testing if boardings differ by day of week\n")
+      print(summary_result)
+      
+      # Perform post-hoc test if ANOVA is significant
+      if(length(summary_result) > 0 && 
+         is.list(summary_result[[1]]) && 
+         "Pr(>F)" %in% names(summary_result[[1]])) {
+        
+        if(summary_result[[1]]$`Pr(>F)`[1] < 0.05) {
+          cat("\nANOVA shows significant differences. Performing Tukey's HSD post-hoc test:\n")
+          posthoc <- TukeyHSD(anova_boardings)
+          print(posthoc)
+          
+          # Visualize post-hoc test results
+          cat("\nVisualization of pairwise comparisons:\n")
+          plot(posthoc, las = 1)
+        } else {
+          cat("No significant differences in boardings between days (p >=0.05)\n")
+        }
+      } else {
+        cat("ANOVA results structure differs from expected - check data\n")
+      }
+    }, error = function(e) {
+      cat("Error in ANOVA test:", conditionMessage(e), "\n")
+      cat("This could be due to insufficient variation in the data\n")
+    })
+  } else {
+    cat("Insufficient data for ANOVA - need at least one data point per day\n")
+  }
+} else {
+  cat("Required columns 'Boardings' and/or 'Day' not found in boardings_by_day\n")
+}
+```
+
+## 💡 Key Insights and Findings
+
+```{r insights}
+cat("=== TRANSIT SYSTEM KEY FINDINGS ===\n\n")
+
+# System-level metrics
+if("Entries" %in% names(total_entries_exits) && "Exits" %in% names(total_entries_exits)) {
+  total_avg_entries <- mean(total_entries_exits$Entries, na.rm = TRUE)
+  total_avg_exits <- mean(total_entries_exits$Exits, na.rm = TRUE)
+  
+  cat("SYSTEM UTILIZATION:\n")
+  cat("• Average daily entries:", formatC(round(total_avg_entries), format="f", big.mark=",", digits=0), "\n")
+  cat("• Average daily exits:", formatC(round(total_avg_exits), format="f", big.mark=",", digits=0), "\n")
+  
+  # Calculate ratio of entries to exits
+  ratio <- mean(total_entries_exits$Entries, na.rm = TRUE) / 
+           mean(total_entries_exits$Exits, na.rm = TRUE)
+  cat("• Entry/exit ratio:", round(ratio, 2), "\n")
+}
+
+# Daily patterns
+if("Boardings" %in% names(boardings_by_day) && "Day" %in% names(boardings_by_day)) {
+  busiest_day <- boardings_by_day %>%
+    arrange(desc(Boardings)) %>%
+    slice(1) %>%
+    pull(Day)
+  
+  lightest_day <- boardings_by_day %>%
+    arrange(Boardings) %>%
+    slice(1) %>%
+    pull(Day)
+  
+  cat("\nTEMPORAL PATTERNS:\n")
+  cat("• Busiest day of week:", busiest_day, "\n")
+  cat("• Lightest day of week:", lightest_day, "\n")
+} else if(length(names(boardings_by_day)) >= 2) {
+  # Use original column names if we couldn't rename
+  busiest_day <- boardings_by_day %>%
+    arrange(desc(.[[2]])) %>%
+    slice(1) %>%
+    pull(1)
+  
+  cat("• Busiest day of week:", busiest_day, "\n")
+}
+
+# Station insights
+if("Station Name" %in% names(boardings_by_route)) {
+  # Top station by total boardings
+  if("Total" %in% names(boardings_by_route)) {
+    top_station <- boardings_by_route %>%
+      arrange(desc(Total)) %>%
+      slice(1)
+    
+    cat("\nSTATION UTILIZATION:\n")
+    cat("• Busiest station:", top_station$`Station Name`, 
+        "with", formatC(top_station$Total, format="f", big.mark=",", digits=0), "daily boardings\n")
+  }
+  
+  # AM vs PM peak patterns
+  am_peak_sum <- sum(boardings_by_route$`AM Peak (Open-9:30am)`, na.rm = TRUE)
+  pm_peak_sum <- sum(boardings_by_route$`PM Peak (3pm-7pm)`, na.rm = TRUE)
+  
+  cat("• AM Peak total boardings:", formatC(am_peak_sum, format="f", big.mark=",", digits=0), "\n")
+  cat("• PM Peak total boardings:", formatC(pm_peak_sum, format="f", big.mark=",", digits=0), "\n")
+  cat("• PM to AM ratio:", round(pm_peak_sum/am_peak_sum, 2), "\n")
+}
+
+# Fare technology adoption
+if(all(c("Avg Daily Tapped Entries", "Avg Daily NonTapped Entries") %in% names(entries_by_tap))) {
+  total_tapped <- sum(entries_by_tap$`Avg Daily Tapped Entries`, na.rm = TRUE)
+  total_non_tapped <- sum(entries_by_tap$`Avg Daily NonTapped Entries`, na.rm = TRUE)
+  total_entries <- total_tapped + total_non_tapped
+  
+  cat("\nFARE TECHNOLOGY ADOPTION:\n")
+  cat("• Tap entry usage rate:", 
+      round(100 * total_tapped / total_entries, 1), "%\n", sep = "")
+  cat("• Non-tap entry usage rate:", 
+      round(100 * total_non_tapped / total_entries, 1), "%\n", sep = "")
+}
+```
+
+## 🔍 Data Quality Assessment
+
+```{r data-quality}
+cat("=== DATA QUALITY REPORT ===\n\n")
+
+# Check for missing values in main datasets
+if("Entries" %in% names(total_entries_exits) && "Exits" %in% names(total_entries_exits)) {
+  missing_values <- sapply(total_entries_exits, function(x) sum(is.na(x)))
+  cat("Missing values in entries/exits dataset:\n")
+  print(missing_values)
+  
+  # Check for outliers in entries and exits
+  entries_outliers <- boxplot.stats(total_entries_exits$Entries)$out
+  exits_outliers <- boxplot.stats(total_entries_exits$Exits)$out
+  
+  cat("\nOutlier analysis:\n")
+  cat("• Number of outliers in Entries:", length(entries_outliers), "\n")
+  cat("• Number of outliers in Exits:", length(exits_outliers), "\n")
+  
+  if(length(entries_outliers) > 0) {
+    cat("• Days with outlier entry counts:\n")
+    outlier_days <- total_entries_exits %>% 
+      filter(Entries %in% entries_outliers) %>%
+      select(Date, Entries)
+    print(head(outlier_days, 5))
+    if(nrow(outlier_days) > 5) cat("  (showing 5 of", nrow(outlier_days), "outliers)\n")
+  }
+}
+
+# Additional quality checks for other datasets
+if("Boardings" %in% names(boardings_by_day)) {
+  missing_day_values <- sum(is.na(boardings_by_day$Boardings))
+  cat("\nMissing values in day of week boardings:", missing_day_values, "\n")
+}
+
+if("Station Name" %in% names(boardings_by_route)) {
+  missing_station_counts <- colSums(is.na(boardings_by_route))
+  
+  cat("\nMissing values by time period in station data:\n")
+  print(missing_station_counts)
+  
+  # Check for stations with incomplete data
+  incomplete_stations <- boardings_by_route %>%
+    filter(if_any(2:6, is.na)) %>%
+    select(`Station Name`)
+  
+  if(nrow(incomplete_stations) > 0) {
+    cat("\nStations with incomplete time period data:\n")
+    print(incomplete_stations)
+  } else {
+    cat("\nAll stations have complete time period data.\n")
+  }
+}
+```
+
+## 🎯 Conclusions and Recommendations
+
+This analysis reveals several important patterns in WMATA transit system usage:
+
+1. **Weekday vs. Weekend Usage**: There is a clear difference between weekday and weekend ridership, with Wednesday showing the highest usage. WMATA planners should ensure adequate service capacity on peak weekdays.
+
+2. **Time Period Distribution**: The PM Peak (3pm-7pm) shows the highest ridership concentration at 35.6% of total boardings. This suggests the need for increased service frequency during this period.
+
+3. **Station Utilization**: The analysis identified Gallery Place and Union Station as the busiest stations with over 11,000 daily boardings each. These stations may require infrastructure improvements to handle high passenger volumes.
+
+4. **Fare Technology Adoption**: Approximately 92.2% of entries use tap technology, indicating strong adoption of modern fare collection methods. Further promotion could help increase this rate further.
+
+5. **Peak Travel Patterns**: The PM peak has a higher ridership than the AM peak, suggesting a more dispersed morning commute pattern but concentrated evening departure times.
+
+### 📝 Recommendations for WMATA Planners:
+
+- Focus service improvements on the busiest stations (Gallery Place, Union Station, and Metro Center)
+- Increase train frequency during the PM Peak period (3pm-7pm) to accommodate the higher ridership
+- Consider targeted infrastructure upgrades at high-volume stations
+- Investigate outlier days with unusually high or low ridership to understand special events impact
+- Further promote tap technology to increase adoption rates beyond the current 92.2%
+- Develop strategies to address the weekday/weekend ridership differential, particularly for Sundays which have the lowest ridership
+
+### 🔮 Next Steps for Analysis:
+
+- Incorporate weather and special event data to understand external factors affecting WMATA ridership
+- Conduct more detailed analysis of transfer patterns between Metro lines
+- Examine year-over-year trends to identify long-term changes in ridership behavior
+- Analyze fare type usage (standard fare vs. senior/disabled) to understand customer segments
+- Integrate demographic data to better understand service area characteristics
+- Compare pre-pandemic and post-pandemic ridership patterns to assess recovery
+- Analyze bus-to-rail transfer patterns to optimize intermodal connections
