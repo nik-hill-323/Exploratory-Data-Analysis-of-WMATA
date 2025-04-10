@@ -29,7 +29,7 @@ This analysis requires the following R packages:
 ```r
 library(ggplot2)      # For data visualization
 library(dplyr)        # For data manipulation
-library(readr)        # For reading CSV files
+library(readr)        # For reading all CSV files
 library(tidyr)        # For data cleaning
 library(lubridate)    # For date handling
 library(gridExtra)    # For arranging multiple plots
